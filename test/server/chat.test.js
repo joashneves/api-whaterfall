@@ -1,74 +1,81 @@
-import { jest } from '@jest/globals';
-import ChatService from '../../services/chatService.js';
-import Message from '../../models/Message.js';
-import Conversation from '../../models/Conversation.js';
+const io = require('socket.io-mock');
+const ChatService = require('/server/services/chatServices'); // Certifique-se de que o caminho está correto
 
-// Mock dos modelos
-jest.mock('../../models/Message.js');
-jest.mock('../../models/Conversation.js');
+jest.mock('../services/chatServices.js'); // Mocka o serviço do Chat
 
-describe('ChatService', () => {
+describe('Chat Socket Events', () => {
+  let mockSocket;
+  let mockIo;
+
   beforeEach(() => {
-    jest.clearAllMocks();
+    mockSocket = new io.Socket(); // Criando uma instância mock do socket
+    mockIo = new io.Server(); // Criando uma instância mock do io
+    setupChatSockets(mockSocket, mockIo); // Configurando o serviço de chat
   });
 
-  describe('addMessage', () => {
-    test('deve adicionar uma mensagem e atualizar a conversa', async () => {
-      const mockMessage = {
-        _id: 'msg1',
-        conversationId: 'conv1',
-        sender: 'user1',
-        content: 'Teste',
-        save: jest.fn().mockResolvedValue(true)
-      };
-      
-      Message.mockReturnValue(mockMessage);
-      Conversation.findByIdAndUpdate.mockResolvedValue(true);
-      
-      const result = await ChatService.addMessage('conv1', 'user1', 'Teste');
-      
-      expect(Message).toHaveBeenCalledWith({
-        conversationId: 'conv1',
-        sender: 'user1',
-        content: 'Teste'
-      });
-      expect(mockMessage.save).toHaveBeenCalled();
-      expect(Conversation.findByIdAndUpdate).toHaveBeenCalledWith(
-        'conv1',
-        { lastMessage: 'msg1', updatedAt: expect.any(Date) }
-      );
-      expect(result).toEqual(mockMessage);
+  afterEach(() => {
+    jest.clearAllMocks(); // Limpar mocks entre os testes
+  });
+
+  test('deve entrar nos grupos corretamente quando joinGroups é emitido', () => {
+    const groupIds = ['group_1', 'group_2'];
+
+    // Simula o evento 'joinGroups' que é disparado pelo socket
+    mockSocket.emit('joinGroups', groupIds);
+
+    // Verifica se o socket entrou nos grupos corretos
+    expect(mockSocket.join).toHaveBeenCalledTimes(groupIds.length); // Espera que o join tenha sido chamado para cada grupo
+    groupIds.forEach(groupId => {
+      expect(mockSocket.join).toHaveBeenCalledWith(groupId); // Verifica se o grupo foi passado para o método join
     });
   });
 
-  describe('markMessageAsRead', () => {
-    test('deve marcar mensagem como lida', async () => {
-      Message.findByIdAndUpdate.mockResolvedValue(true);
-      
-      await ChatService.markMessageAsRead('msg1', 'user1');
-      
-      expect(Message.findByIdAndUpdate).toHaveBeenCalledWith(
-        'msg1',
-        { $addToSet: { readBy: 'user1' } }
-      );
+  test('deve enviar uma mensagem para o grupo e salvar a mensagem no banco', async () => {
+    const groupId = 'group_1';
+    const senderId = 'user_1';
+    const content = 'Mensagem de teste';
+
+    // Mockando o serviço de Chat
+    const savedMessage = {
+      _id: '12345',
+      content,
+      sender: senderId,
+      group: groupId,
+      createdAt: new Date(),
+    };
+    ChatService.addGroupMessage.mockResolvedValue(savedMessage);
+
+    // Simula o evento 'groupMessage'
+    await mockSocket.emit('groupMessage', { groupId, senderId, content });
+
+    // Verifica se a mensagem foi salva no banco
+    expect(ChatService.addGroupMessage).toHaveBeenCalledWith(groupId, senderId, content);
+
+    // Verifica se a mensagem foi emitida para todos no grupo
+    expect(mockIo.to).toHaveBeenCalledWith(groupId);
+    expect(mockIo.emit).toHaveBeenCalledWith('newGroupMessage', {
+      id: savedMessage._id.toString(),
+      text: savedMessage.content,
+      sender: savedMessage.sender.toString(),
+      timestamp: savedMessage.createdAt,
+      groupId: savedMessage.group.toString(),
     });
   });
 
-  describe('getUserConversations', () => {
-    test('deve retornar conversas do usuário', async () => {
-      const mockConversations = [{ _id: 'conv1' }];
-      Conversation.find.mockReturnValue({
-        populate: jest.fn().mockReturnValue({
-          populate: jest.fn().mockReturnValue({
-            sort: jest.fn().mockResolvedValue(mockConversations)
-          })
-        })
-      });
-      
-      const result = await ChatService.getUserConversations('user1');
-      
-      expect(Conversation.find).toHaveBeenCalledWith({ participants: 'user1' });
-      expect(result).toEqual(mockConversations);
-    });
+  test('deve capturar erros e emitir "chatError" no socket', async () => {
+    const groupId = 'group_1';
+    const senderId = 'user_1';
+    const content = 'Mensagem de erro';
+
+    const errorMessage = 'Erro ao salvar a mensagem';
+
+    // Simulando um erro no serviço de Chat
+    ChatService.addGroupMessage.mockRejectedValue(new Error(errorMessage));
+
+    // Simula o evento 'groupMessage' com erro
+    await mockSocket.emit('groupMessage', { groupId, senderId, content });
+
+    // Verifica se o erro foi emitido no socket
+    expect(mockSocket.emit).toHaveBeenCalledWith('chatError', errorMessage);
   });
 });

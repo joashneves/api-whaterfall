@@ -2,10 +2,13 @@ import express from "express";
 import { createServer } from "http";
 import { Server } from "socket.io";
 import setupSockets from "./sockets/index.js";
+import connectDB from "./database/db.js";
 
 const app = express();
 const porta = process.env.PORT || 3000;
 const httpServer = createServer(app);
+
+connectDB();
 
 const io = new Server(httpServer, { 
   cors: {
